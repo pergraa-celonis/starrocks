@@ -197,9 +197,10 @@ public class CallStubGeneratorTest {
             throws NoSuchMethodException, ClassNotFoundException, InvocationTargetException, IllegalAccessException {
         Class<?> clazz = VarargsConcat.class;
         final String genClassName = CallStubGenerator.CLAZZ_NAME.replace("/", ".");
+        // numActualVarArgs = 3: the UDF is called with 3 string columns
         Method m = clazz.getMethod("evaluate", String[].class);
         final byte[] updates =
-                CallStubGenerator.generateScalarCallStub(clazz, m);
+                CallStubGenerator.generateScalarCallStub(clazz, m, 3);
 
         ClassLoader classLoader = new TestClassLoader(genClassName, updates);
         final Class<?> stubClazz = classLoader.loadClass(genClassName);
@@ -207,8 +208,8 @@ public class CallStubGeneratorTest {
 
         VarargsConcat concat = new VarargsConcat();
         int testSize = 100;
-        
-        // Test with 3 string columns
+
+        // Stub signature: (int rows, VarargsConcat obj, String[] col0, String[] col1, String[] col2) String[]
         String[] inputs1 = new String[testSize];
         String[] inputs2 = new String[testSize];
         String[] inputs3 = new String[testSize];
@@ -221,20 +222,22 @@ public class CallStubGeneratorTest {
             expects[i] = inputs1[i] + " " + inputs2[i] + " " + inputs3[i];
         }
 
-        final String[] res = (String[])batchCall.invoke(null, testSize, concat, inputs1, inputs2, inputs3);
+        // batchCallV(rows, obj, col0, col1, col2) - each colN is a String[] column
+        final String[] res = (String[]) batchCall.invoke(null, testSize, concat, inputs1, inputs2, inputs3);
         for (int i = 0; i < testSize; i++) {
             Assertions.assertEquals(expects[i], res[i]);
         }
     }
-    
+
     @Test
     public void testVarargsAggUDF()
             throws NoSuchMethodException, ClassNotFoundException, InvocationTargetException, IllegalAccessException {
         Class<?> clazz = VarargsSum.class;
         final String genClassName = CallStubGenerator.CLAZZ_NAME.replace("/", ".");
+        // numActualVarArgs = 3: the UDAF is called with 3 integer columns
         Method m = clazz.getMethod("update", VarargsSum.State.class, Integer[].class);
         final byte[] updates =
-                CallStubGenerator.generateCallStubV(clazz, m);
+                CallStubGenerator.generateCallStubV(clazz, m, 3);
 
         ClassLoader classLoader = new TestClassLoader(genClassName, updates);
         final Class<?> stubClazz = classLoader.loadClass(genClassName);
@@ -256,6 +259,7 @@ public class CallStubGeneratorTest {
             expect += inputs1[i] + inputs2[i] + inputs3[i];
         }
 
+        // batchCallV(rows, obj, state, col0, col1, col2) - each colN is an Integer[] column
         assert batchCall != null;
         batchCall.invoke(null, testSize, sum, state, inputs1, inputs2, inputs3);
 

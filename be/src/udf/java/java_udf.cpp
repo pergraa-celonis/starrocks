@@ -705,7 +705,7 @@ Status ClassLoader::init() {
     _get_class = env->GetMethodID((jclass)_clazz.handle(), "findClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     _get_call_stub =
             env->GetMethodID((jclass)_clazz.handle(), "generateCallStubV",
-                             "(Ljava/lang/String;Ljava/lang/Class;Ljava/lang/reflect/Method;I)Ljava/lang/Class;");
+                             "(Ljava/lang/String;Ljava/lang/Class;Ljava/lang/reflect/Method;II)Ljava/lang/Class;");
 
     // init method
     if (_get_class == nullptr || _get_call_stub == nullptr) {
@@ -738,7 +738,8 @@ StatusOr<JVMClass> ClassLoader::getClass(const std::string& className) {
     return res;
 }
 
-StatusOr<JVMClass> ClassLoader::genCallStub(const std::string& stubClassName, jclass clazz, jobject method, int type) {
+StatusOr<JVMClass> ClassLoader::genCallStub(const std::string& stubClassName, jclass clazz, jobject method, int type,
+                                            int numActualVarArgs) {
     auto& helper = JVMFunctionHelper::getInstance();
     JNIEnv* env = helper.getEnv();
 
@@ -746,8 +747,9 @@ StatusOr<JVMClass> ClassLoader::genCallStub(const std::string& stubClassName, jc
     jstring jstr_name = helper.to_jstring(jni_class_name);
     LOCAL_REF_GUARD(jstr_name);
 
-    // generate call stub
-    auto loaded_clazz = env->CallObjectMethod(_handle.handle(), _get_call_stub, jstr_name, clazz, method, type);
+    // generate call stub; pass numActualVarArgs for varargs methods
+    auto loaded_clazz =
+            env->CallObjectMethod(_handle.handle(), _get_call_stub, jstr_name, clazz, method, type, numActualVarArgs);
     LOCAL_REF_GUARD(loaded_clazz);
     RETURN_ERROR_IF_EXCEPTION(env, "exception happened when gen call stub: {}");
 
