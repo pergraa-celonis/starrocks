@@ -914,9 +914,15 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
             }
 
             // Handle element type: object array 'L...;' or primitive type (single char)
+            // For varargs parameters (e.g. String..., Integer...), the method signature contains
+            // the array type ([Ljava/lang/String; etc.). Map the element type to the corresponding
+            // LogicalType so that get_method_desc() validation passes.
+            LogicalType elem_type = TYPE_UNKNOWN;
+            bool elem_is_box = true;
             if (sign[i] == 'L') {
                 // Object array: [L<classname>;
                 ++i; // Skip 'L'
+                int elem_st = i;
                 while (i < sign.size() && sign[i] != ';') {
                     ++i;
                 }
@@ -924,11 +930,41 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
                     return Status::InternalError(
                             fmt::format("Invalid object array descriptor '{}': missing ';'", sign));
                 }
+                std::string elem_class = sign.substr(elem_st, i - elem_st);
+                if (elem_class == "java/lang/String") {
+                    elem_type = TYPE_VARCHAR;
+                } else if (elem_class == "java/lang/Boolean") {
+                    elem_type = TYPE_BOOLEAN;
+                } else if (elem_class == "java/lang/Byte") {
+                    elem_type = TYPE_TINYINT;
+                } else if (elem_class == "java/lang/Short") {
+                    elem_type = TYPE_SMALLINT;
+                } else if (elem_class == "java/lang/Integer") {
+                    elem_type = TYPE_INT;
+                } else if (elem_class == "java/lang/Long") {
+                    elem_type = TYPE_BIGINT;
+                } else if (elem_class == "java/lang/Float") {
+                    elem_type = TYPE_FLOAT;
+                } else if (elem_class == "java/lang/Double") {
+                    elem_type = TYPE_DOUBLE;
+                }
                 // i now points to ';', loop will increment it
+            } else {
+                // Primitive array: [Z [B [S [I [J [F [D
+                elem_is_box = false;
+                switch (sign[i]) {
+                case 'Z': elem_type = TYPE_BOOLEAN; break;
+                case 'B': elem_type = TYPE_TINYINT; break;
+                case 'S': elem_type = TYPE_SMALLINT; break;
+                case 'I': elem_type = TYPE_INT; break;
+                case 'J': elem_type = TYPE_BIGINT; break;
+                case 'F': elem_type = TYPE_FLOAT; break;
+                case 'D': elem_type = TYPE_DOUBLE; break;
+                default: break;
+                }
             }
-            // For primitive arrays ([I, [J, etc.), the single char is already at the right position
 
-            desc->emplace_back(MethodTypeDescriptor{TYPE_UNKNOWN, true});
+            desc->emplace_back(MethodTypeDescriptor{elem_type, elem_is_box});
             continue;
         }
         if (sign[i] == 'L') {
