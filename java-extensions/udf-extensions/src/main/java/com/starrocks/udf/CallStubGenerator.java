@@ -186,19 +186,25 @@ public class CallStubGenerator {
         }
 
         // Varargs implementation.
-        // Slot layout: 0=rows, 1=obj, 2=state, 3..3+N-1=col0..colN-1, 3+N=i, 3+N+1=args
+        // Slot layout: 0=rows, 1=obj, 2=state, 3..3+F-1=fixedCols, 3+F..3+F+N-1=varargCols, 3+F+N=i, 3+F+N+1=args
+        // where F = numFixedParams (params between State and the varargs param), N = numActualVarArgs
         private void genVarargs() {
             final Parameter[] parameters = udafUpdate.getParameters();
-            // parameters[0] = State, parameters[1] = T[] (varargs component array type)
+            // parameters[0] = State; last parameter is always the varargs array;
+            // any parameters in between are fixed (non-varargs) parameters.
             Class<?> stateType = parameters[0].getType();
-            Class<?> varargArrayType = parameters[1].getType(); // e.g. Integer[]
-            Class<?> componentType = varargArrayType.getComponentType(); // e.g. Integer
+            int numFixedParams = parameters.length - 2; // excludes State and the varargs param
+            Class<?> varargArrayType = parameters[parameters.length - 1].getType(); // always the last param
+            Class<?> componentType = varargArrayType.getComponentType();
 
-            // Build descriptor: (I, UDAF, State, T[]col0, ..., T[]colN-1) V
+            // Build descriptor: (I, UDAF, State, fixedCol0[], ..., T[]col0, ..., T[]colN-1) V
             StringBuilder desc = new StringBuilder("(");
             desc.append("I");
             desc.append(Type.getDescriptor(udafClazz));
             desc.append(Type.getDescriptor(stateType));
+            for (int i = 0; i < numFixedParams; i++) {
+                desc.append("[").append(Type.getDescriptor(parameters[1 + i].getType()));
+            }
             String colDesc = "[" + Type.getDescriptor(componentType);
             for (int i = 0; i < numActualVarArgs; i++) {
                 desc.append(colDesc);
@@ -210,7 +216,7 @@ public class CallStubGenerator {
                             new String[] {"java/lang/Exception"});
             mv.visitCode();
 
-            int iIdx   = 3 + numActualVarArgs;
+            int iIdx   = 3 + numFixedParams + numActualVarArgs;
             int argsIdx = iIdx + 1;
 
             // i = 0
@@ -230,19 +236,24 @@ public class CallStubGenerator {
             mv.visitTypeInsn(ANEWARRAY, Type.getInternalName(componentType));
             mv.visitVarInsn(ASTORE, argsIdx);
 
-            // args[j] = colJ[i]
+            // args[j] = varargColJ[i]
             for (int j = 0; j < numActualVarArgs; j++) {
                 mv.visitVarInsn(ALOAD, argsIdx);
                 visitIntConst(mv, j);
-                mv.visitVarInsn(ALOAD, 3 + j);
+                mv.visitVarInsn(ALOAD, 3 + numFixedParams + j);
                 mv.visitVarInsn(ILOAD, iIdx);
                 mv.visitInsn(AALOAD);
                 mv.visitInsn(AASTORE);
             }
 
-            // obj.update(state, args)
+            // obj.update(state, fixedCol0[i], ..., args)
             mv.visitVarInsn(ALOAD, 1);
             mv.visitVarInsn(ALOAD, 2);
+            for (int j = 0; j < numFixedParams; j++) {
+                mv.visitVarInsn(ALOAD, 3 + j);
+                mv.visitVarInsn(ILOAD, iIdx);
+                mv.visitInsn(AALOAD);
+            }
             mv.visitVarInsn(ALOAD, argsIdx);
             mv.visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(udafClazz), udafUpdate.getName(),
                     Type.getMethodDescriptor(udafUpdate), false);
@@ -297,6 +308,10 @@ public class CallStubGenerator {
     // Varargs (e.g. evaluate(String...)) with numActualVarArgs=3:
     //   public static String[] batchCallV(int rows, UDF obj, String[] col0, String[] col1, String[] col2)
     //   { String[] r=new String[rows]; for(int i=0;i<rows;i++){String[] a={col0[i],col1[i],col2[i]};r[i]=obj.evaluate(a);}return r;}
+    //
+    // Mixed varargs (e.g. evaluate(String, Integer...)) with numActualVarArgs=2:
+    //   public static String[] batchCallV(int rows, UDF obj, String[] col0, Integer[] col1, Integer[] col2)
+    //   { String[] r=new String[rows]; for(int i=0;i<rows;i++){Integer[] a={col1[i],col2[i]};r[i]=obj.evaluate(col0[i],a);}return r;}
     // -----------------------------------------------------------------------
     private static class BatchCallEvaluateGenerator {
         BatchCallEvaluateGenerator(Class<?> clazz, Method evaluate, int numActualVarArgs) {
@@ -410,22 +425,28 @@ public class CallStubGenerator {
         }
 
         // Varargs implementation.
-        // Slot layout: 0=rows, 1=obj, 2..2+N-1=col0..colN-1, 2+N=res, 2+N+1=i, 2+N+2=args
+        // Slot layout: 0=rows, 1=obj, 2..2+F-1=fixedCols, 2+F..2+F+N-1=varargCols,
+        //              2+F+N=res, 2+F+N+1=i, 2+F+N+2=args
+        // where F = numFixedParams (params before the varargs param), N = numActualVarArgs
         private void genVarargs() {
             final Parameter[] parameters = udfEvaluate.getParameters();
-            // For varargs evaluate(T... args): parameters[0].getType() = T[]
-            Class<?> varargArrayType = parameters[0].getType(); // e.g. String[]
-            Class<?> componentType   = varargArrayType.getComponentType(); // e.g. String
+            // The last parameter is always the varargs array; any parameters before it are fixed.
+            int numFixedParams = parameters.length - 1;
+            Class<?> varargArrayType = parameters[parameters.length - 1].getType();
+            Class<?> componentType   = varargArrayType.getComponentType();
 
             final Class<?> returnType = udfEvaluate.getReturnType();
             if (returnType.isPrimitive()) {
                 throw new UnsupportedOperationException("Unsupported return Type:" + returnType.getTypeName());
             }
 
-            // Descriptor: (I, UDF, T[]col0, ..., T[]colN-1) T[]
+            // Descriptor: (I, UDF, fixedCol0[], ..., T[]col0, ..., T[]colN-1) T[]
             StringBuilder desc = new StringBuilder("(");
             desc.append("I");
             desc.append(Type.getDescriptor(udfClazz));
+            for (int i = 0; i < numFixedParams; i++) {
+                desc.append("[").append(Type.getDescriptor(parameters[i].getType()));
+            }
             String colDesc = "[" + Type.getDescriptor(componentType);
             for (int i = 0; i < numActualVarArgs; i++) {
                 desc.append(colDesc);
@@ -438,7 +459,7 @@ public class CallStubGenerator {
                             new String[] {"java/lang/Exception"});
             mv.visitCode();
 
-            int resIdx  = 2 + numActualVarArgs;
+            int resIdx  = 2 + numFixedParams + numActualVarArgs;
             int iIdx    = resIdx + 1;
             int argsIdx = iIdx + 1;
 
@@ -464,20 +485,25 @@ public class CallStubGenerator {
             mv.visitTypeInsn(ANEWARRAY, Type.getInternalName(componentType));
             mv.visitVarInsn(ASTORE, argsIdx);
 
-            // args[j] = colJ[i]
+            // args[j] = varargColJ[i]
             for (int j = 0; j < numActualVarArgs; j++) {
                 mv.visitVarInsn(ALOAD, argsIdx);
                 visitIntConst(mv, j);
-                mv.visitVarInsn(ALOAD, 2 + j);
+                mv.visitVarInsn(ALOAD, 2 + numFixedParams + j);
                 mv.visitVarInsn(ILOAD, iIdx);
                 mv.visitInsn(AALOAD);
                 mv.visitInsn(AASTORE);
             }
 
-            // res[i] = obj.evaluate(args)
+            // res[i] = obj.evaluate(fixedCol0[i], ..., args)
             mv.visitVarInsn(ALOAD, resIdx);
             mv.visitVarInsn(ILOAD, iIdx);
             mv.visitVarInsn(ALOAD, 1);
+            for (int j = 0; j < numFixedParams; j++) {
+                mv.visitVarInsn(ALOAD, 2 + j);
+                mv.visitVarInsn(ILOAD, iIdx);
+                mv.visitInsn(AALOAD);
+            }
             mv.visitVarInsn(ALOAD, argsIdx);
             mv.visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(udfClazz), udfEvaluate.getName(),
                     Type.getMethodDescriptor(udfEvaluate), false);

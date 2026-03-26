@@ -947,6 +947,10 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
                     elem_type = TYPE_FLOAT;
                 } else if (elem_class == "java/lang/Double") {
                     elem_type = TYPE_DOUBLE;
+                } else if (elem_class == "java/util/List") {
+                    elem_type = TYPE_ARRAY;
+                } else if (elem_class == "java/util/Map") {
+                    elem_type = TYPE_MAP;
                 }
                 // i now points to ';', loop will increment it
             } else {
